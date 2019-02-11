@@ -108,6 +108,7 @@ typedef struct spi_init_param {
 	uint32_t	max_speed_hz;
 	enum spi_mode	mode;
 	uint8_t		chip_select;
+	uint32_t	flags;
 } spi_init_param;
 
 typedef struct spi_desc {
@@ -116,6 +117,7 @@ typedef struct spi_desc {
 	uint32_t		max_speed_hz;
 	enum spi_mode	mode;
 	uint8_t			chip_select;
+	uint32_t		flags;
 #ifdef _XPARAMETERS_PS_H_
 	XSpiPs_Config	*config;
 	XSpiPs			instance;
