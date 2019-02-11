@@ -48,6 +48,7 @@
 #include "io.h"
 #else
 #include "xil_io.h"
+#include "xil_cache.h"
 #endif
 #include "util.h"
 #include "axi_dac_core.h"
@@ -94,6 +95,19 @@
 #define AXI_DAC_DATA_SELECT(x)			(((x) & 0xF) << 0)
 #define AXI_DAC_TO_DATA_SELECT(x)		(((x) >> 0) & 0xF)
 
+#define AXI_DAC_REG_CHAN_CNTRL_6(c)		(0x0414 + (c) * 0x40)
+#define AXI_DAC_IQCOR_ENB				(1 << 2)
+
+#define AXI_DAC_REG_CHAN_CNTRL_7(c)		(0x0418 + (c) * 0x40)
+#define AXI_DAC_DAC_DDS_SEL(x)			(((x) & 0xF) << 0)
+#define AXI_DAC_TO_DAC_DDS_SEL(x)		(((x) >> 0) & 0xF)
+
+#define AXI_DAC_REG_CHAN_CNTRL_8(c)		(0x041C + (c) * 0x40)
+#define AXI_DAC_IQCOR_COEFF_1(x)		(((x) & 0xFFFF) << 16)
+#define AXI_DAC_TO_IQCOR_COEFF_1(x)		(((x) >> 16) & 0xFFFF)
+#define AXI_DAC_IQCOR_COEFF_2(x)		(((x) & 0xFFFF) << 0)
+#define AXI_DAC_TO_IQCOR_COEFF_2(x)		(((x) >> 0) & 0xFFFF)
+
 /***************************************************************************//**
  * @brief axi_dac_read
  *******************************************************************************/
@@ -127,6 +141,26 @@ int32_t axi_dac_write(struct axi_dac *dac,
 }
 
 /***************************************************************************//**
+ * @brief axi_dac_set_datasel
+*******************************************************************************/
+int32_t axi_dac_set_datasel(struct axi_dac *dac,
+			    int32_t chan,
+			    enum axi_dac_data_sel sel)
+{
+	int32_t i;
+
+	if (chan < 0)
+		for (i = 0; i < dac->num_channels; i++)
+			axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_7(i), sel);
+	else
+		axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_7(chan), sel);
+
+	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
  * @brief dds_set_frequency
  *
  * freq is in Hz (i.e. set to 1*1000*1000 for 1 MHz)
@@ -149,6 +183,28 @@ int32_t axi_dac_dds_set_frequency(struct axi_dac *dac,
 }
 
 /***************************************************************************//**
+ * @brief axi_dac_dds_get_frequency
+ *
+ * freq is in Hz (i.e. set to 1*1000*1000 for 1 MHz)
+ *******************************************************************************/
+int32_t axi_dac_dds_get_frequency(struct axi_dac *dac,
+				  uint32_t chan, uint32_t *freq)
+{
+	uint32_t reg;
+	uint64_t val64;
+
+	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
+	axi_dac_read(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), &reg);
+	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	reg = (reg & AXI_DAC_DDS_INCR(~0));
+	val64 = (uint64_t) reg * dac->clock_hz;
+	do_div(&val64, 0xFFFF);
+	*freq = val64;
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
  * @brief axi_dac_dds_set_phase
  *
  * phase is in milli angles scaled to 1000 (i.e. 90*1000 is 90 degrees (pi/2))
@@ -166,6 +222,29 @@ int32_t axi_dac_dds_set_phase(struct axi_dac *dac,
 	reg = (reg & ~AXI_DAC_DDS_INIT(~0)) | AXI_DAC_DDS_INIT(val64);
 	axi_dac_write(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), reg);
 	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
+ * @brief axi_dac_dds_get_phase
+ *
+ * phase is in milli angles scaled to 1000 (i.e. 90*1000 is 90 degrees (pi/2))
+ *******************************************************************************/
+int32_t axi_dac_dds_get_phase(struct axi_dac *dac,
+			      uint32_t chan, uint32_t *phase)
+{
+	uint64_t val64;
+	uint32_t reg;
+
+	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
+	axi_dac_read(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), &reg);
+	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	reg = (reg & AXI_DAC_DDS_INIT(~0));
+	reg = AXI_DAC_TO_DDS_INIT(reg);
+	val64 = reg * 360000ULL + (0x10000 / 2);
+	do_div(&val64, 0x10000);
+	*phase = val64;
 
 	return SUCCESS;
 }
@@ -194,6 +273,221 @@ int32_t axi_dac_dds_set_scale(struct axi_dac *dac,
 	axi_dac_write(dac, AXI_DAC_REG_DDS_SCALE(chan),
 		      AXI_DAC_DDS_SCALE(scale_reg));
 	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
+ * @brief axi_dac_dds_get_scale
+ *
+ * scale is in micro units (i.e. 1*1000*1000 is 1.0)
+ *******************************************************************************/
+int32_t axi_dac_dds_get_scale(struct axi_dac *dac,
+			      uint32_t chan,
+			      int32_t *scale_micro_units)
+{
+	int32_t sign = 1;
+	uint32_t scale_reg;
+
+	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
+	axi_dac_read(dac, AXI_DAC_REG_DDS_SCALE(chan),
+		     &scale_reg);
+	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	scale_reg = AXI_DAC_TO_DDS_SCALE(scale_reg);
+	sign = scale_reg & 0x8000 ? -1 : 1;
+	scale_reg &= ~0x8000;
+	scale_reg = ((uint64_t)scale_reg * 1000000) / 0x4000;
+	*scale_micro_units = scale_reg * sign;
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
+ * @brief dds_to_signed_mag_fmt
+*******************************************************************************/
+uint32_t axi_dac_dds_to_signed_mag_fmt(int32_t val,
+				       int32_t val2)
+{
+	uint32_t i;
+	uint64_t val64;
+
+	switch (val) {
+	case 1:
+		i = 0x4000;
+		break;
+	case -1:
+		i = 0xC000;
+		break;
+	case 0:
+		i = 0;
+		if (val2 < 0) {
+			i = 0x8000;
+			val2 *= -1;
+		}
+		break;
+	default:
+		i = 0;
+	}
+
+	val64 = (uint64_t)val2 * 0x4000UL + (1000000UL / 2);
+	do_div(&val64, 1000000UL);
+
+	return i | val64;
+}
+
+/***************************************************************************//**
+ * @brief dds_from_signed_mag_fmt
+*******************************************************************************/
+void axi_dac_dds_from_signed_mag_fmt(uint32_t val,
+				     int32_t *r_val,
+				     int32_t *r_val2)
+{
+	uint64_t val64;
+	int32_t sign;
+
+	if (val & 0x8000)
+		sign = -1;
+	else
+		sign = 1;
+
+	if (val & 0x4000)
+		*r_val = 1 * sign;
+	else
+		*r_val = 0;
+
+	val &= ~0xC000;
+
+	val64 = val * 1000000ULL + (0x4000 / 2);
+	do_div(&val64, 0x4000);
+
+	if (*r_val == 0)
+		*r_val2 = val64 * sign;
+	else
+		*r_val2 = val64;
+}
+
+/***************************************************************************//**
+ * @brief dds_set_calib_scale_phase
+*******************************************************************************/
+int32_t axi_dac_dds_set_calib_phase_scale(struct axi_dac *dac,
+		uint32_t phase,
+		uint32_t chan,
+		int32_t val,
+		int32_t val2)
+{
+	uint32_t reg;
+	uint32_t i;
+
+	i = axi_dac_dds_to_signed_mag_fmt(val, val2);
+
+	axi_dac_read(dac, AXI_DAC_REG_CHAN_CNTRL_8(chan), &reg);
+
+	if (!((chan + phase) % 2)) {
+		reg &= ~AXI_DAC_IQCOR_COEFF_1(~0);
+		reg |= AXI_DAC_IQCOR_COEFF_1(i);
+	} else {
+		reg &= ~AXI_DAC_IQCOR_COEFF_2(~0);
+		reg |= AXI_DAC_IQCOR_COEFF_2(i);
+	}
+	axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_8(chan), reg);
+	axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_6(chan), AXI_DAC_IQCOR_ENB);
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
+ * @brief dds_get_calib_scale_phase
+*******************************************************************************/
+int32_t axi_dac_dds_get_calib_phase_scale(struct axi_dac *dac,
+		uint32_t phase,
+		uint32_t chan,
+		int32_t *val,
+		int32_t *val2)
+{
+	uint32_t reg;
+
+	axi_dac_read(dac, AXI_DAC_REG_CHAN_CNTRL_8(chan), &reg);
+
+	if (!((phase + chan) % 2)) {
+		reg = AXI_DAC_TO_IQCOR_COEFF_1(reg);
+	} else {
+		reg = AXI_DAC_TO_IQCOR_COEFF_2(reg);
+	}
+
+	axi_dac_dds_from_signed_mag_fmt(reg, val, val2);
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
+ * @brief dds_set_calib_scale
+*******************************************************************************/
+int32_t axi_dac_dds_set_calib_scale(struct axi_dac *dac,
+				    uint32_t chan,
+				    int32_t val,
+				    int32_t val2)
+{
+	return axi_dac_dds_set_calib_phase_scale(dac, 0, chan, val, val2);
+}
+
+/***************************************************************************//**
+ * @brief dds_get_calib_scale
+*******************************************************************************/
+int32_t axi_dac_dds_get_calib_scale(struct axi_dac *dac,
+				    uint32_t chan,
+				    int32_t *val,
+				    int32_t *val2)
+{
+	return axi_dac_dds_get_calib_phase_scale(dac, 0, chan, val, val2);
+}
+
+/***************************************************************************//**
+ * @brief dds_set_calib_phase
+*******************************************************************************/
+int32_t axi_dac_dds_set_calib_phase(struct axi_dac *dac,
+				    uint32_t chan,
+				    int32_t val,
+				    int32_t val2)
+{
+	return axi_dac_dds_set_calib_phase_scale(dac, 1, chan, val, val2);
+}
+
+/***************************************************************************//**
+ * @brief dds_get_calib_phase
+*******************************************************************************/
+int32_t axi_dac_dds_get_calib_phase(struct axi_dac *dac,
+				    uint32_t chan,
+				    int32_t *val,
+				    int32_t *val2)
+{
+	return axi_dac_dds_get_calib_phase_scale(dac, 1, chan, val, val2);
+}
+
+/***************************************************************************//**
+ * @brief axi_dmac_set_buff
+*******************************************************************************/
+int32_t axi_dac_set_buff(struct axi_dac *dac,
+			 uint32_t address,
+			 uint16_t *buff,
+			 uint32_t buff_size)
+{
+	uint32_t index;
+	uint32_t data_i;
+	uint32_t data_q;
+
+	for(index = 0; index < buff_size; index += 2) {
+		data_i = (buff[index]);
+		data_q = (buff[index + 1] << 16);
+#ifdef ALTERA_PLATFORM
+		IOWR_32DIRECT(address, index * 2, data_i | data_q);
+#else
+		Xil_Out32(address + index * 2, data_i | data_q);
+#endif
+	}
+
+#ifndef ALTERA_PLATFORM
+	Xil_DCacheFlush();
+#endif
 
 	return SUCCESS;
 }

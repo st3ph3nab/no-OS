@@ -83,6 +83,14 @@
 #define AXI_ADC_PN23_TYPE			BIT(1)
 #define AXI_ADC_ENABLE				BIT(0)
 
+#define AXI_ADC_REG_CHAN_CNTRL_2(c)	(0x0414 + (c) * 0x40)
+#define AXI_ADC_IQCOR_COEFF_1(x)	(((x) & 0xFFFF) << 16)
+#define AXI_ADC_TO_IQCOR_COEFF_1(x)	(((x) >> 16) & 0xFFFF)
+#define AXI_ADC_IQCOR_COEFF_2(x)	(((x) & 0xFFFF) << 0)
+#define AXI_ADC_TO_IQCOR_COEFF_2(x)	(((x) >> 0) & 0xFFFF)
+
+#define AXI_ADC_REG_DELAY(l)		(0x0800 + (l) * 0x4)
+
 /***************************************************************************//**
  * @brief axi_adc_read
  *******************************************************************************/
@@ -114,6 +122,172 @@ int32_t axi_adc_write(struct axi_adc *adc,
 
 	return SUCCESS;
 }
+
+/***************************************************************************//**
+ * @brief axi_adc_set_pnsel
+*******************************************************************************/
+int32_t axi_adc_set_pnsel(struct axi_adc *adc,
+			  uint32_t chan,
+			  enum axi_adc_pn_sel sel)
+{
+	uint32_t reg_data;
+
+	axi_adc_read(adc, ADI_REG_CHAN_CNTRL_3(chan), &reg_data);
+	reg_data &= ~ADI_ADC_PN_SEL(~0);
+	reg_data |= ADI_ADC_PN_SEL(sel);
+	axi_adc_write(adc, ADI_REG_CHAN_CNTRL_3(chan), reg_data);
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
+ * @brief axi_adc_idelay_set
+*******************************************************************************/
+void axi_adc_idelay_set(struct axi_adc *adc,
+			uint32_t lane,
+			uint32_t val)
+{
+	axi_adc_write(adc, ADI_REG_DELAY(lane), val);
+
+}
+
+/***************************************************************************//**
+ * @brief axi_adc_set_calib_phase_scale
+*******************************************************************************/
+int32_t axi_adc_set_calib_phase_scale(struct axi_adc *adc,
+				      uint32_t phase,
+				      uint32_t chan,
+				      int32_t val,
+				      int32_t val2)
+{
+	uint32_t fract;
+	uint64_t llval;
+	uint32_t tmp;
+
+	switch (val) {
+	case 1:
+		fract = 0x4000;
+		break;
+	case -1:
+		fract = 0xC000;
+		break;
+	case 0:
+		fract = 0;
+		if (val2 < 0) {
+			fract = 0x8000;
+			val2 *= -1;
+		}
+		break;
+	default:
+		return FAILURE;
+	}
+
+	llval = (uint64_t)val2 * 0x4000UL + (1000000UL / 2);
+	do_div(&llval, 1000000UL);
+	fract |= llval;
+
+	axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), &tmp);
+
+	if (!((chan + phase) % 2)) {
+		tmp &= ~AXI_ADC_IQCOR_COEFF_1(~0);
+		tmp |= AXI_ADC_IQCOR_COEFF_1(fract);
+	} else {
+		tmp &= ~AXI_ADC_IQCOR_COEFF_2(~0);
+		tmp |= AXI_ADC_IQCOR_COEFF_2(fract);
+	}
+
+	axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), tmp);
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
+ * @brief axi_adc_get_calib_scale_phase
+*******************************************************************************/
+int32_t axi_adc_get_calib_phase_scale(struct axi_adc *adc,
+				      uint32_t phase,
+				      uint32_t chan,
+				      int32_t *val,
+				      int32_t *val2)
+{
+	uint32_t tmp;
+	int32_t sign;
+	uint64_t llval;
+
+	axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), &tmp);
+
+	if (!((phase + chan) % 2)) {
+		tmp = AXI_ADC_TO_IQCOR_COEFF_1(tmp);
+	} else {
+		tmp = AXI_ADC_TO_IQCOR_COEFF_2(tmp);
+	}
+
+	if (tmp & 0x8000)
+		sign = -1;
+	else
+		sign = 1;
+
+	if (tmp & 0x4000)
+		*val = 1 * sign;
+	else
+		*val = 0;
+
+	tmp &= ~0xC000;
+
+	llval = tmp * 1000000ULL + (0x4000 / 2);
+	do_div(&llval, 0x4000);
+	if (*val == 0)
+		*val2 = llval * sign;
+	else
+		*val2 = llval;
+
+	return SUCCESS;
+}
+
+/***************************************************************************//**
+ * @brief axi_adc_set_calib_phase
+*******************************************************************************/
+int32_t axi_adc_set_calib_phase(struct axi_adc *adc,
+				uint32_t chan,
+				int32_t val,
+				int32_t val2)
+{
+	return axi_adc_set_calib_phase_scale(adc, 1, chan, val, val2);
+}
+
+/***************************************************************************//**
+ * @brief adc_get_calib_phase
+*******************************************************************************/
+int32_t axi_adc_get_calib_phase(struct axi_adc *adc,
+				uint32_t chan,
+				int32_t *val,
+				int32_t *val2)
+{
+	return axi_adc_get_calib_phase_scale(adc, 1, chan, val, val2);
+}
+
+/***************************************************************************//**
+ * @brief adc_set_calib_scale
+*******************************************************************************/
+int32_t axi_adc_set_calib_scale(struct axi_adc *adc,
+				uint32_t chan,
+				int32_t val,
+				int32_t val2)
+{
+	return axi_adc_set_calib_phase_scale(adc, 0, chan, val, val2);
+}
+
+/***************************************************************************//**
+ * @brief adc_get_calib_scale
+*******************************************************************************/
+int32_t axi_adc_get_calib_scale(struct axi_adc *adc,
+				uint32_t chan,
+				int32_t *val,
+				int32_t *val2)
+{
+	return axi_adc_get_calib_phase_scale(adc, 0, chan, val, val2);
+}
+
 
 /***************************************************************************//**
  * @brief axi_adc_init
